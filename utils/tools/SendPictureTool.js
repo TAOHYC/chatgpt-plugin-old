@@ -45,7 +45,7 @@ export class SendPictureTool extends AbstractTool {
     }
     let errs = []
     try {
-      if (groupList.get(target)) {
+      if (groupList.includes(target)) {
         let group = await e.bot.pickGroup(target)
         for (let pic of pictures) {
           try {
