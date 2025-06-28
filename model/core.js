@@ -588,7 +588,8 @@ class Core {
       option.system = system
       option.replyPureTextCallback = opt.settings.replyPureTextCallback || (async (msg) => {
         if (msg) {
-          await e.reply(msg, true)
+          msg = msg.replace(/⁺/g, '');
+          await e.reply(msg, false)
         }
       })
       option.toolMode = (opt.settings.forceTool || Config.geminiForceToolKeywords?.find(k => prompt?.includes(k))) ? 'ANY' : 'AUTO'
@@ -599,7 +600,7 @@ class Core {
       })
       let resp = await client.sendMessage(prompt, conversation)
       if (resp.image) {
-        this.reply(segment.image(resp.image), true)
+        this.reply(segment.image(resp.image), false)
       }
       return resp
     } else {
