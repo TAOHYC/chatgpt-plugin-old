@@ -2,8 +2,10 @@ import plugin from '../../../lib/plugins/plugin.js'
 import common from '../../../lib/common/common.js'
 import _ from 'lodash'
 import { Config } from '../utils/config.js'
+import { v4 as uuid } from 'uuid'
 import AzureTTS from '../utils/tts/microsoft-azure.js'
 import VoiceVoxTTS from '../utils/tts/voicevox.js'
+import BingSunoClient from '../utils/BingSuno.js'
 import {
   completeJSON,
   formatDate,
@@ -19,7 +21,8 @@ import {
   makeForwardMsg,
   randomString,
   render,
-  renderUrl
+  renderUrl,
+  extractMarkdownJson
 } from '../utils/common.js'
 
 import fetch from 'node-fetch'
@@ -31,7 +34,6 @@ import XinghuoClient from '../utils/xinghuo/xinghuo.js'
 import { getProxy } from '../utils/proxy.js'
 import { generateSuggestedResponse } from '../utils/chat.js'
 import Core from '../model/core.js'
-import { collectProcessors } from '../utils/postprocessors/BasicProcessor.js'
 
 let version = Config.version
 let proxy = getProxy()
@@ -57,6 +59,35 @@ const newFetch = (url, options = {}) => {
 
   return fetch(url, mergedOptions)
 }
+// 添加一个延迟函数
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// 添加一个计算打字延迟的函数
+const calculateTypingDelay = (text) => {
+  // 基本打字速度：假设平均60字/分钟，也就是1秒/字
+  const baseSpeed = 250; // 毫秒/字
+  
+  // 获取字符数
+  const charCount = text.length;
+  
+  // 计算基础延迟时间（毫秒）
+  let delay = charCount * (baseSpeed / 1);
+  
+  // 设置最小延迟，即使很短的消息也要有一定延迟
+  const minDelay = 1000;
+  // 设置最大延迟，不要因为长消息等待太久
+  const maxDelay = 6000;
+  
+  // 确保延迟在合理范围内
+  delay = Math.max(minDelay, delay);
+  delay = Math.min(maxDelay, delay);
+  
+  // 添加一些随机波动，让感觉更自然(±20%)
+  const randomFactor = 0.8 + (Math.random() * 0.4); // 0.8-1.2之间的随机数
+  delay = Math.round(delay * randomFactor);
+  
+  return delay;
+};
 
 export class chatgpt extends plugin {
   constructor (e) {
@@ -72,43 +103,43 @@ export class chatgpt extends plugin {
       rule: [
         {
           /** 命令正则匹配 */
-          reg: '^#(图片)?chat3[sS]*',
+          reg: '^#chat3[sS]*',
           /** 执行方法 */
           fnc: 'chatgpt3'
         },
         {
           /** 命令正则匹配 */
-          reg: '^#(图片)?chat1[sS]*',
+          reg: '^#chat1[sS]*',
           /** 执行方法 */
           fnc: 'chatgpt1'
         },
         {
           /** 命令正则匹配 */
-          reg: '^#(图片)?chatglm[sS]*',
+          reg: '^#chatglm[sS]*',
           /** 执行方法 */
           fnc: 'chatglm'
         },
         {
           /** 命令正则匹配 */
-          reg: '^#(图片)?bing[sS]*',
+          reg: '^#bing[sS]*',
           /** 执行方法 */
           fnc: 'bing'
         },
         {
           /** 命令正则匹配 */
-          reg: '^#(图片)?claude(2|3|.ai)[sS]*',
+          reg: '^#claude(2|3|.ai)[sS]*',
           /** 执行方法 */
           fnc: 'claude2'
         },
         {
           /** 命令正则匹配 */
-          reg: '^#(图片)?claude[sS]*',
+          reg: '^#claude[sS]*',
           /** 执行方法 */
           fnc: 'claude'
         },
         {
           /** 命令正则匹配 */
-          reg: '^#(图片)?xh[sS]*',
+          reg: '^#xh[sS]*',
           /** 执行方法 */
           fnc: 'xh'
         },
@@ -122,25 +153,25 @@ export class chatgpt extends plugin {
         },
         {
           /** 命令正则匹配 */
-          reg: '^#(图片)?glm4[sS]*',
+          reg: '^#glm4[sS]*',
           /** 执行方法 */
           fnc: 'glm4'
         },
         {
           /** 命令正则匹配 */
-          reg: '^#(图片)?qwen[sS]*',
+          reg: '^#qwen[sS]*',
           /** 执行方法 */
           fnc: 'qwen'
         },
         {
           /** 命令正则匹配 */
-          reg: '^#(图片)?gemini[sS]*',
+          reg: '^#gemini[sS]*',
           /** 执行方法 */
           fnc: 'gemini'
         },
         {
           /** 命令正则匹配 */
-          reg: toggleMode === 'at' ? '^[^#][sS]*' : '^#(图片)?chat[^gpt][sS]*',
+          reg: toggleMode === 'at' ? '^[^#][sS]*' : '^#chat[^gpt][sS]*',
           /** 执行方法 */
           fnc: 'chatgpt',
           log: false
@@ -204,9 +235,10 @@ export class chatgpt extends plugin {
       ]
     })
     this.toggleMode = toggleMode
-    this.reply = async (msg, quote, data) => {
+    // 修改 reply 函数，移除引用相关逻辑
+    this.reply = async (msg, quote = false, data) => {
       if (!Config.enableMd) {
-        return e.reply(msg, quote, data)
+        return e.reply(msg, false, data)
       }
       let handler = e.runtime?.handler || {}
       const btns = await handler.call('chatgpt.button.post', this.e, data)
@@ -222,7 +254,7 @@ export class chatgpt extends plugin {
         }
       }
 
-      return e.reply(msg, quote, data)
+      return e.reply(msg, false, data)
     }
   }
 
@@ -235,7 +267,7 @@ export class chatgpt extends plugin {
     // todo 根据use返回不同的对话列表
     let keys = await redis.keys('CHATGPT:CONVERSATIONS:*')
     if (!keys || keys.length === 0) {
-      await this.reply('当前没有人正在与机器人对话', true)
+      await this.reply('当前没有人正在与机器人对话', false)
     } else {
       let response = '当前对话列表：(格式为【开始时间 ｜ qq昵称 ｜ 对话长度 ｜ 最后活跃时间】)\n'
       await Promise.all(keys.map(async (key) => {
@@ -245,7 +277,7 @@ export class chatgpt extends plugin {
           response += `${conversation.ctime} ｜ ${conversation.sender.nickname} ｜ ${conversation.num} ｜ ${conversation.utime} \n`
         }
       }))
-      await this.reply(`${response}`, true)
+      await this.reply(`${response}`, false)
     }
   }
 
@@ -268,13 +300,13 @@ export class chatgpt extends plugin {
     let ats = e.message.filter(m => m.type === 'at')
     let use = await redis.get('CHATGPT:USE') || 'api'
     if (use !== 'api3') {
-      await this.reply('本功能当前仅支持API3模式', true)
+      await this.reply('本功能当前仅支持API3模式', false)
       return false
     }
     if (ats.length === 0 || (ats.length === 1 && (e.atme || e.atBot))) {
       let conversationId = _.trimStart(e.msg, '#chatgpt删除对话').trim()
       if (!conversationId) {
-        await this.reply('指令格式错误，请同时加上对话id或@某人以删除他当前进行的对话', true)
+        await this.reply('指令格式错误，请同时加上对话id或@某人以删除他当前进行的对话', false)
         return false
       } else {
         let deleteResponse = await deleteConversation(conversationId, newFetch)
@@ -290,7 +322,7 @@ export class chatgpt extends plugin {
             deleted++
           }
         }
-        await this.reply(`对话删除成功，同时清理了${deleted}个同一对话中用户的对话。`, true)
+        await this.reply(`对话删除成功，同时清理了${deleted}个同一对话中用户的对话。`, false)
       }
     } else {
       for (let u = 0; u < ats.length; u++) {
@@ -479,12 +511,18 @@ export class chatgpt extends plugin {
    * #chatgpt
    */
   async chatgpt (e) {
-    let msg = e.msg
-    let prompt
-    let forcePictureMode = false
+    let msg = e.msg || ''
+    let prompt = ''
+    
+    // 先检测是否有图片
+    const hasImg = await getImg(e)
+    
     if (this.toggleMode === 'at') {
-      if (!msg || e.msg?.startsWith('#')) {
-        return false
+      if (!msg || msg.startsWith('#')) {
+        // 如果没有文字但有图片，继续处理
+        if (!hasImg) {
+          return false
+        }
       }
       if ((e.isGroup || e.group_id) && !(e.atme || e.atBot || (e.at === e.self_id))) {
         return false
@@ -524,6 +562,11 @@ export class chatgpt extends plugin {
       } catch (err) {
         logger.warn(err)
       }
+      
+      // at模式下，如果没有文字但有图片，给一个默认提示
+      if ((!prompt || prompt.length === 0) && hasImg) {
+        prompt = '理解图片内容和意图，直接给出相应的回答或帮助，请简短叙述。'
+      }
     } else {
       let ats = e.message.filter(m => m.type === 'at')
       if (!(e.atme || e.atBot) && ats.length > 0) {
@@ -532,12 +575,15 @@ export class chatgpt extends plugin {
         }
         return false
       }
-      if (e.msg.trimStart().startsWith('#图片chat')) {
-        forcePictureMode = true
-      }
-      prompt = _.replace(e.msg.trimStart(), /#(图片)?chat/, '').trim()
+      prompt = _.replace(e.msg.trimStart(), '#chat', '').trim()
+      
+      // 修改这里：如果没有文字但有图片，给一个默认提示
       if (prompt.length === 0) {
-        return false
+        if (!hasImg) {
+          return false
+        }
+        // 给图片一个默认的提示词
+        prompt = '理解图片内容和意图，直接给出相应的回答或帮助，请简短叙述。'
       }
     }
     let groupId = e.isGroup ? e.group.group_id : ''
@@ -550,10 +596,10 @@ export class chatgpt extends plugin {
     const use = (userData.mode === 'default' ? null : userData.mode) || await redis.get('CHATGPT:USE') || 'api'
     // 自动化插件本月已发送xx条消息更新太快，由于延迟和缓存问题导致不同客户端不一样，at文本和获取的card不一致。因此单独处理一下
     prompt = prompt.replace(/^｜本月已发送\d+条消息/, '')
-    await this.abstractChat(e, prompt, use, forcePictureMode)
+    await this.abstractChat(e, prompt, use)
   }
 
-  async abstractChat (e, prompt, use, forcePictureMode = false) {
+  async abstractChat (e, prompt, use) {
     // 关闭私聊通道后不回复
     if (!e.isMaster && e.isPrivate && !Config.enablePrivateChat) {
       return false
@@ -600,27 +646,56 @@ export class chatgpt extends plugin {
     let userSetting = await getUserReplySetting(this.e)
     let useTTS = !!userSetting.useTTS
     const isImg = await getImg(e)
+    
+    // 修改图片处理逻辑
     if (Config.imgOcr && !!isImg) {
-      let imgOcrText = await getImageOcrText(e)
-      if (imgOcrText) {
-        prompt = prompt + '"'
-        for (let imgOcrTextKey in imgOcrText) {
-          prompt += imgOcrText[imgOcrTextKey]
+      let imgOcrText = null
+      try {
+        imgOcrText = await getImageOcrText(e)
+      } catch (ocrError) {
+        // 捕获OCR错误，记录到debug日志而不是警告日志
+        if (Config.debug) {
+          logger.debug(`OCR服务暂时不可用: ${ocrError.message || ocrError}`)
         }
-        prompt = prompt + ' "'
+        // OCR失败时继续执行，不影响主流程
+      }
+      
+      if (imgOcrText) {
+        // 如果原始prompt是默认提示或为空，直接使用OCR内容
+        prompt = prompt || ''
+        if (!prompt || prompt === '理解图片内容和意图，直接给出相应的回答或帮助，请简短叙述。') {
+          prompt = '图片内容："'
+          for (let imgOcrTextKey in imgOcrText) {
+            prompt += imgOcrText[imgOcrTextKey]
+          }
+          prompt += '"'
+        } else {
+          // 否则追加到原始prompt后面
+          prompt = prompt + ' "'
+          for (let imgOcrTextKey in imgOcrText) {
+            prompt += imgOcrText[imgOcrTextKey]
+          }
+          prompt += '"'
+        }
+      } else if (!prompt || prompt === '理解图片内容和意图，直接给出相应的回答或帮助，请简短叙述。') {
+        prompt = ''
       }
     }
+    
     // 检索是否有屏蔽词
     const promtBlockWord = Config.promptBlockWords.find(word => prompt.toLowerCase().includes(word.toLowerCase()))
     if (promtBlockWord) {
-      await this.reply('主人不让我回答你这种问题，真是抱歉了呢', true)
+      await this.reply('主人不让我回答你这种问题，真是抱歉了呢', false)
       return false
     }
     let confirm = await redis.get('CHATGPT:CONFIRM')
     let confirmOn = (!confirm || confirm === 'on') // confirm默认开启
     if (confirmOn) {
-      await this.reply('我正在思考如何回复你，请稍等', true, { recallMsg: 8 })
+      await this.reply('我正在思考如何回复你，请稍等', false, { recallMsg: 8 })
     }
+
+    prompt = `请基于情感和语气对你最终的回复进行分段，并在每段后添加"⤶"(分段符号)以便我用正则匹配，每个段落需要简短自然，最多能分两个段落。\n\n${prompt}`
+
     const emotionFlag = await redis.get(`CHATGPT:WRONG_EMOTION:${e.sender.user_id}`)
     let userReplySetting = await getUserReplySetting(this.e)
     // 图片模式就不管了，降低抱歉概率
@@ -783,37 +858,81 @@ export class chatgpt extends plugin {
           await redis.set(key, JSON.stringify(previousConversation), Config.conversationPreserveTime > 0 ? { EX: Config.conversationPreserveTime } : {})
         }
       }
+      // 处理suno生成
+      if (Config.enableChatSuno) {
+        let client = new BingSunoClient() // 此处使用了bing的suno客户端，后续和本地suno合并
+        const sunoList = extractMarkdownJson(chatMessage.text)
+        if (sunoList.length == 0) {
+          const lyrics = client.extractLyrics(chatMessage.text)
+          if (lyrics !== '') {
+            sunoList.push(
+              {
+                json: { option: 'Suno', tags: client.generateRandomStyle(), title: `${e.sender.nickname}之歌`, lyrics: lyrics },
+                markdown: null,
+                origin: lyrics
+              }
+            )
+          }
+        }
+        for (let suno of sunoList) {
+          if (suno.json.option == 'Suno') {
+            chatMessage.text = chatMessage.text.replace(suno.origin, `歌曲 《${suno.json.title}》`)
+            logger.info(`开始生成歌曲${suno.json.tags}`)
+            redis.set(`CHATGPT:SUNO:${e.sender.user_id}`, 'c', { EX: 30 }).then(() => {
+              try {
+                if (Config.SunoModel == 'local') {
+                  // 调用本地Suno配置进行歌曲生成
+                  client.getLocalSuno(suno.json, e)
+                } else if (Config.SunoModel == 'api') {
+                  // 调用第三方Suno配置进行歌曲生成
+                  client.getApiSuno(suno.json, e)
+                }
+              } catch (err) {
+                redis.del(`CHATGPT:SUNO:${e.sender.user_id}`)
+                this.reply('歌曲生成失败：' + err)
+              }
+            })
+          }
+        }
+      }
       let response = chatMessage?.text?.replace('\n\n\n', '\n')
-      let postProcessors = await collectProcessors('post')
-      let thinking = chatMessage.thinking_text
-      for (let processor of postProcessors) {
-        let output = await processor.processInner({
-          text: response, thinking_text: thinking
-        })
-        response = output.text
-        thinking = output.thinking_text
-      }
-      if (handler.has('chatgpt.response.post')) {
-        logger.debug('调用后处理器: chatgpt.response.post')
-        handler.call('chatgpt.response.post', this.e, {
-          content: response,
-          thinking,
-          use,
-          prompt
-        }, true).catch(err => {
-          logger.error('后处理器出错', err)
-        })
-      }
       let mood = 'blandness'
       if (!response) {
-        await this.reply('没有任何回复', true)
+        await this.reply('没有任何回复', false)
         return
       }
+   // 修改分隔符处理部分
+if (response.includes('⤶')) {
+  logger.info('AI使用了指定的分隔符');
+  // 使用分隔符分割响应
+  let chunks = response.split('⤶');
+
+  // 发送每个chunk，除了最后一个
+  for (let i = 0; i < chunks.length - 1; i++) {
+    let chunk = chunks[i].trim();
+    if (chunk) {
+      try {
+        // 根据当前chunk的字数计算延迟
+        const typingDelay = calculateTypingDelay(chunk);
+        logger.info(`消息长度：${chunk.length}字，等待延迟：${typingDelay}毫秒`);
+        await delay(typingDelay);
+        await this.reply(chunk, e.isGroup);
+      } catch (error) {
+        logger.error(`发送消息错误: ${error.message}`);
+      }
+    }
+  }
+} else {
+  logger.info('AI没有使用指定的分隔符，使用后备方案');
+  // 如果没有使用分隔符，使用后备方案
+  await this.sendSplitMessage(response, e.isGroup);
+}
+
       let emotion, emotionDegree
       if (Config.ttsMode === 'azure' && (use === 'claude' || use === 'bing') && await AzureTTS.getEmotionPrompt(e)) {
         let ttsRoleAzure = userReplySetting.ttsRoleAzure
-        const emotionReg = /\[\s*['`’‘]?(\w+)[`’‘']?\s*[,，、]\s*([\d.]+)\s*\]/
-        const emotionTimes = response.match(/\[\s*['`’‘]?(\w+)[`’‘']?\s*[,，、]\s*([\d.]+)\s*\]/g)
+        const emotionReg = /\[\s*['`'']?(\w+)[`''']?\s*[,，、]\s*([\d.]+)\s*\]/
+        const emotionTimes = response.match(/\[\s*['`'']?(\w+)[`''']?\s*[,，、]\s*([\d.]+)\s*\]/g)
         const emotionMatch = response.match(emotionReg)
         if (emotionMatch) {
           const [startIndex, endIndex] = [
@@ -847,7 +966,7 @@ export class chatgpt extends plugin {
             if (emotionTimes.length > 1) {
               logger.warn('回复包含多个情绪项')
               // 处理包含多个情绪项的情况，后续可以考虑实现单次回复多情绪的配置
-              response = response.replace(/\[\s*['`’‘]?(\w+)[`’‘']?\s*[,，、]\s*([\d.]+)\s*\]/g, '').trim()
+              response = response.replace(/\[\s*['`'']?(\w+)[`''']?\s*[,，、]\s*([\d.]+)\s*\]/g, '').trim()
               await redis.set(`CHATGPT:WRONG_EMOTION:${e.sender.user_id}`, '3')
             }
           } else {
@@ -870,7 +989,7 @@ export class chatgpt extends plugin {
       // 检索是否有屏蔽词
       const blockWord = Config.blockWords.find(word => response.toLowerCase().includes(word.toLowerCase()))
       if (blockWord) {
-        await this.reply('返回内容存在敏感词，我不想回答你', true)
+        await this.reply('返回内容存在敏感词，我不想回答你', false)
         return false
       }
       // 处理中断的代码区域
@@ -882,16 +1001,8 @@ export class chatgpt extends plugin {
       if (codeBlockCount && !shouldAddClosingBlock) {
         response = response.replace(/```$/, '\n```')
       }
-      // 处理引用
-      let quotemessage = []
-      if (chatMessage?.quote) {
-        chatMessage.quote.forEach(function (item, index) {
-          if (item.text && item.text.trim() !== '') {
-            quotemessage.push(item)
-          }
-        })
-      }
-      // 处理内容和引用中的图片
+      
+      // 处理引用和引用中的图片
       const regex = /\b((?:https?|ftp|file):\/\/[-a-zA-Z0-9+&@#/%?=~_|!:,.;]*[-a-zA-Z0-9+&@#/%=~_|])/g
       let responseUrls = response.match(regex)
       let imgUrls = []
@@ -899,13 +1010,11 @@ export class chatgpt extends plugin {
         let images = await Promise.all(responseUrls.map(link => isImage(link)))
         imgUrls = responseUrls.filter((link, index) => images[index])
       }
-      for (let quote of quotemessage) {
-        if (quote.imageLink) imgUrls.push(quote.imageLink)
-      }
+      
       if (useTTS) {
         // 缓存数据
-        this.cacheContent(e, use, response, prompt, quotemessage, mood, chatMessage.suggestedResponses, imgUrls)
-        if (response === 'Sorry, I think we need to move on! Click “New topic” to chat about something else.') {
+        this.cacheContent(e, use, response, prompt, mood, chatMessage.suggestedResponses, imgUrls)
+        if (response === 'Sorry, I think we need to move on! Click "New topic" to chat about something else.') {
           this.reply('当前对话超过上限，已重置对话', false, { at: true })
           await redis.del(`CHATGPT:CONVERSATIONS_BING:${e.sender.user_id}`)
           return false
@@ -935,7 +1044,7 @@ export class chatgpt extends plugin {
           emojiStrip = (await import('emoji-strip')).default
           ttsResponse = emojiStrip(ttsResponse)
         } catch (error) {
-          await this.reply('依赖emoji-strip未安装，请执行pnpm install emoji-strip安装依赖', true)
+          await this.reply('依赖emoji-strip未安装，请执行pnpm install emoji-strip安装依赖', false)
         }
         // 处理多行回复有时候只会读第一行和azure语音会读出一些标点符号的问题
         ttsResponse = ttsResponse.replace(/[-:_；*;\n]/g, '，')
@@ -952,10 +1061,7 @@ export class chatgpt extends plugin {
               prompt
             })
           }
-          await this.reply(responseText, e.isGroup)
-          if (quotemessage.length > 0) {
-            this.reply(await makeForwardMsg(this.e, quotemessage.map(msg => `${msg.text} - ${msg.url}`)))
-          }
+          
           if (Config.enableSuggestedResponses && chatMessage.suggestedResponses) {
             this.reply(`建议的回复：\n${chatMessage.suggestedResponses}`)
           }
@@ -966,9 +1072,9 @@ export class chatgpt extends plugin {
         } else {
           await this.reply('合成语音发生错误~')
         }
-      } else if (forcePictureMode || userSetting.usePicture || (Config.autoUsePicture && response.length > Config.autoUsePictureThreshold)) {
+      } else if (userSetting.usePicture || (!Config.enableMd && Config.autoUsePicture && response.length > Config.autoUsePictureThreshold)) {
         try {
-          await this.renderImage(e, use, response, prompt, quotemessage, mood, chatMessage.suggestedResponses, imgUrls)
+          await this.renderImage(e, use, response, prompt, mood, chatMessage.suggestedResponses, imgUrls)
         } catch (err) {
           logger.warn('error happened while uploading content to the cache server. QR Code will not be showed in this picture.')
           logger.error(err)
@@ -978,8 +1084,8 @@ export class chatgpt extends plugin {
           this.reply(`建议的回复：\n${chatMessage.suggestedResponses}`)
         }
       } else {
-        this.cacheContent(e, use, response, prompt, quotemessage, mood, chatMessage.suggestedResponses, imgUrls)
-        if (response === 'Thanks for this conversation! I\'ve reached my limit, will you hit “New topic,” please?') {
+        this.cacheContent(e, use, response, prompt, mood, chatMessage.suggestedResponses, imgUrls)
+        if (response === 'Thanks for this conversation! I\'ve reached my limit, will you hit "New topic," please?') {
           this.reply('当前对话超过上限，已重置对话', false, { at: true })
           await redis.del(`CHATGPT:CONVERSATIONS_BING:${e.sender.user_id}`)
           return false
@@ -995,10 +1101,7 @@ export class chatgpt extends plugin {
             prompt
           })
         }
-        // await this.reply(responseText, e.isGroup)
-        if (quotemessage.length > 0) {
-          this.reply(await makeForwardMsg(this.e, quotemessage.map(msg => `${msg.text} - ${msg.url}`)))
-        }
+        
         if (chatMessage?.conversation && Config.enableSuggestedResponses && !chatMessage.suggestedResponses && Config.apiKey) {
           try {
             chatMessage.suggestedResponses = await generateSuggestedResponse(chatMessage.conversation)
@@ -1006,38 +1109,25 @@ export class chatgpt extends plugin {
             logger.debug('生成建议回复失败', err)
           }
         }
-        this.reply(responseText, e.isGroup, {
-          btnData: {
-            use,
-            suggested: chatMessage.suggestedResponses
-          }
-        })
-        if (thinking) {
-          if (Config.forwardReasoning) {
-            let thinkingForward = await common.makeForwardMsg(e, [thinking], '思考过程')
-            this.reply(thinkingForward)
-          } else {
-            logger.mark('思考过程', thinking)
-          }
-        }
-
+        
         if (Config.enableSuggestedResponses && chatMessage.suggestedResponses) {
           this.reply(`建议的回复：\n${chatMessage.suggestedResponses}`)
         }
       }
     } catch (err) {
-      logger.error(err)
+      logger.error(`ChatGPT回复出错: ${err.message}`)
+        await this.reply(`出现错误：${err.message}`, false, { recallMsg: e.isGroup ? 10 : 0 })
       if (use === 'api3') {
         // 异常了也要腾地方（todo 大概率后面的也会异常，要不要一口气全杀了）
         await redis.lPop('CHATGPT:CHAT_QUEUE', 0)
       }
       if (err === 'Error: {"detail":"Conversation not found"}') {
         await this.destroyConversations(err)
-        await this.reply('当前对话异常，已经清除，请重试', true, { recallMsg: e.isGroup ? 10 : 0 })
+        await this.reply('当前对话异常，已经清除，请重试', false, { recallMsg: e.isGroup ? 10 : 0 })
       } else {
         let errorMessage = err?.message || err?.data?.message || (typeof (err) === 'object' ? JSON.stringify(err) : err) || '未能确认错误类型！'
         if (errorMessage.length < 200) {
-          await this.reply(`出现错误：${errorMessage}`, true, { recallMsg: e.isGroup ? 10 : 0 })
+          await this.reply(`出现错误：${errorMessage}`, false, { recallMsg: e.isGroup ? 10 : 0 })
         } else {
           await this.renderImage(e, use, `出现异常,错误信息如下 \n \`\`\`${errorMessage}\`\`\``, prompt)
         }
@@ -1045,12 +1135,34 @@ export class chatgpt extends plugin {
     }
   }
 
+// 修改后的后备方案方法
+async sendSplitMessage(text, isGroup) {
+  // 使用正则表达式将文本分割成句子
+  const sentences = text.replace(/([.!?。！？])\s*/g, "$1⤶").split('⤶');
+
+  // 发送除了最后一个之外的所有句子
+  for (let i = 0; i < sentences.length - 1; i++) {
+    let sentence = sentences[i].trim();
+    if (sentence) {
+      try {
+        // 根据当前句子的字数计算延迟
+        const typingDelay = calculateTypingDelay(sentence);
+        logger.info(`句子长度：${sentence.length}字，等待延迟：${typingDelay}毫秒`);
+        await delay(typingDelay);
+        await this.reply(sentence, isGroup);
+      } catch (error) {
+        logger.error(`发送消息错误: ${error.message}`);
+      }
+    }
+  }
+}
+
   async chatgpt1 (e) {
-    return await this.otherMode(e, 'api', /#(图片)?chat1/)
+    return await this.otherMode(e, 'api', '#chat1')
   }
 
   async chatgpt3 (e) {
-    return await this.otherMode(e, 'api3', /#(图片)?chat3/)
+    return await this.otherMode(e, 'api3', '#chat3')
   }
 
   async chatglm (e) {
@@ -1058,34 +1170,35 @@ export class chatgpt extends plugin {
   }
 
   async bing (e) {
-    return await this.otherMode(e, 'bing', /#(图片)?bing/)
+    return await this.otherMode(e, 'bing')
   }
 
   async claude2 (e) {
-    return await this.otherMode(e, 'claude2', /^#(图片)?claude(2|3|.ai)/)
+    return await this.otherMode(e, 'claude2', /^#claude(2|3|.ai)/)
   }
 
   async claude (e) {
-    return await this.otherMode(e, 'claude', /#(图片)?claude/)
+    return await this.otherMode(e, 'claude')
   }
 
   async qwen (e) {
-    return await this.otherMode(e, 'qwen', /#(图片)?qwen/)
+    return await this.otherMode(e, 'qwen')
   }
 
   async glm4 (e) {
-    return await this.otherMode(e, 'chatglm4', /#(图片)?glm4/)
+    return await this.otherMode(e, 'chatglm4', '#glm4')
   }
 
   async gemini (e) {
-    return await this.otherMode(e, 'gemini', /#(图片)?gemini/)
+    return await this.otherMode(e, 'gemini')
   }
 
   async xh (e) {
-    return await this.otherMode(e, 'xh', /#(图片)?xh/)
+    return await this.otherMode(e, 'xh')
   }
 
-  async cacheContent (e, use, content, prompt, quote = [], mood = '', suggest = '', imgUrls = []) {
+  // 修改 cacheContent 函数，移除 quote 参数
+  async cacheContent (e, use, content, prompt, mood = '', suggest = '', imgUrls = []) {
     if (!Config.enableToolbox) {
       return
     }
@@ -1106,7 +1219,7 @@ export class chatgpt extends plugin {
           senderName: e.sender.nickname,
           style: Config.toneStyle,
           mood,
-          quote,
+          quote: [], // 始终设置为空数组
           group: e.isGroup ? e.group.name : '',
           suggest: suggest ? suggest.split('\n').filter(Boolean) : [],
           images: imgUrls
@@ -1131,36 +1244,37 @@ export class chatgpt extends plugin {
     return cacheData
   }
 
-  async renderImage (e, use, content, prompt, quote = [], mood = '', suggest = '', imgUrls = []) {
-    let cacheData = await this.cacheContent(e, use, content, prompt, quote, mood, suggest, imgUrls)
+  // 修改 renderImage 函数，移除 quote 参数
+  async renderImage (e, use, content, prompt, mood = '', suggest = '', imgUrls = []) {
+    let cacheData = await this.cacheContent(e, use, content, prompt, mood, suggest, imgUrls)
     // const template = use !== 'bing' ? 'content/ChatGPT/index' : 'content/Bing/index'
     if (cacheData.error || cacheData.status != 200) {
-      await this.reply(`出现错误：${cacheData.error || 'server error ' + cacheData.status}`, true)
+      await this.reply(`出现错误：${cacheData.error || 'server error ' + cacheData.status}`, false)
     } else {
       await this.reply(await renderUrl(e, (Config.viewHost ? `${Config.viewHost}/` : `http://127.0.0.1:${Config.serverPort || 3321}/`) + `page/${cacheData.file}?qr=${Config.showQRCode ? 'true' : 'false'}`, {
-        retType: Config.quoteReply ? 'base64' : '',
+        retType: false,
         Viewport: {
           width: parseInt(Config.chatViewWidth),
           height: parseInt(parseInt(Config.chatViewWidth) * 0.56)
         },
         func: (parseFloat(Config.live2d) && !Config.viewHost) ? 'window.Live2d == true' : '',
         deviceScaleFactor: parseFloat(Config.cloudDPR)
-      }), e.isGroup && Config.quoteReply)
+      }))
     }
   }
 
   async newxhBotConversation (e) {
     let botId = e.msg.replace(/^#星火助手/, '').trim()
     if (Config.xhmode != 'web') {
-      await this.reply('星火助手仅支持体验版使用', true)
+      await this.reply('星火助手仅支持体验版使用', false)
       return true
     }
     if (!botId) {
-      await this.reply('无效助手id', true)
+      await this.reply('无效助手id', false)
     } else {
       const ssoSessionId = Config.xinghuoToken
       if (!ssoSessionId) {
-        await this.reply('未绑定星火token，请使用#chatgpt设置星火token命令绑定token', true)
+        await this.reply('未绑定星火token，请使用#chatgpt设置星火token命令绑定token', false)
         return true
       }
       let client = new XinghuoClient({
@@ -1197,15 +1311,15 @@ export class chatgpt extends plugin {
               }),
               Config.conversationPreserveTime > 0 ? { EX: Config.conversationPreserveTime } : {}
             )
-            await this.reply(`成功创建助手对话\n助手名称：${botInfo.data.bot_name}\n助手描述：${botInfo.data.bot_desc}`, true)
+            await this.reply(`成功创建助手对话\n助手名称：${botInfo.data.bot_name}\n助手描述：${botInfo.data.bot_desc}`, false)
           } else {
-            await this.reply(`创建助手对话失败,${botInfo.desc}`, true)
+            await this.reply(`创建助手对话失败,${botInfo.desc}`, false)
           }
         } else {
-          await this.reply('创建助手对话失败,服务器异常', true)
+          await this.reply('创建助手对话失败,服务器异常', false)
         }
       } catch (error) {
-        await this.reply(`创建助手对话失败 ${error}`, true)
+        await this.reply(`创建助手对话失败 ${error}`, false)
       }
     }
     return true
@@ -1215,7 +1329,7 @@ export class chatgpt extends plugin {
     let searchBot = e.msg.replace(/^#星火(搜索|查找)助手/, '').trim()
     const ssoSessionId = Config.xinghuoToken
     if (!ssoSessionId) {
-      await this.reply('未绑定星火token，请使用#chatgpt设置星火token命令绑定token', true)
+      await this.reply('未绑定星火token，请使用#chatgpt设置星火token命令绑定token', false)
       return true
     }
     const cacheresOption = {
@@ -1241,10 +1355,10 @@ export class chatgpt extends plugin {
       if (bots.data.pageList.length > 0) {
         this.reply(await makeForwardMsg(this.e, bots.data.pageList.map(msg => `${msg.e.bot.botId} - ${msg.e.bot.botName}`)))
       } else {
-        await this.reply('未查到相关助手', true)
+        await this.reply('未查到相关助手', false)
       }
     } else {
-      await this.reply('搜索助手失败', true)
+      await this.reply('搜索助手失败', false)
     }
   }
 
@@ -1276,11 +1390,11 @@ export class chatgpt extends plugin {
     let ats = e.message.filter(m => m.type === 'at')
     let use = await redis.get('CHATGPT:USE') || 'api'
     // if (use !== 'api3') {
-    //   await this.reply('本功能当前仅支持API3模式', true)
+    //   await this.reply('本功能当前仅支持API3模式', false)
     //   return false
     // }
     if (ats.length === 0) {
-      await this.reply('指令错误，使用本指令时请同时@某人', true)
+      await this.reply('指令错误，使用本指令时请同时@某人', false)
       return false
     } else if (use === 'api3') {
       let at = ats[0]
@@ -1288,7 +1402,7 @@ export class chatgpt extends plugin {
       let atUser = _.trimStart(at.text, '@')
       let conversationId = await redis.get('CHATGPT:QQ_CONVERSATION:' + qq)
       if (!conversationId) {
-        await this.reply(`${atUser}当前未开启对话，无法加入`, true)
+        await this.reply(`${atUser}当前未开启对话，无法加入`, false)
         return false
       }
       await redis.set(`CHATGPT:QQ_CONVERSATION:${e.sender.user_id}`, conversationId)
@@ -1379,6 +1493,10 @@ export class chatgpt extends plugin {
     if (!Config.allowOtherMode) {
       return false
     }
+    
+    // 检测图片
+    const hasImg = await getImg(e)
+    
     let ats = e.message.filter(m => m.type === 'at')
     if (!(e.atme || e.atBot) && ats.length > 0) {
       if (Config.debug) {
@@ -1387,11 +1505,16 @@ export class chatgpt extends plugin {
       return false
     }
     let prompt = _.replace(e.msg.trimStart(), pattern, '').trim()
+    
+    // 如果没有文字但有图片，给默认提示
     if (prompt.length === 0) {
-      return false
+      if (!hasImg) {
+        return false
+      }
+      prompt = '理解图片内容和意图，直接给出相应的回答或帮助，请简短叙述。'
     }
-    let forcePictureMode = e.msg.trimStart().startsWith('#图片')
-    await this.abstractChat(e, prompt, mode, forcePictureMode)
+    
+    await this.abstractChat(e, prompt, mode)
     return true
   }
 }
