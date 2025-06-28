@@ -12,7 +12,7 @@ export class bym extends plugin {
       dsc: 'bym',
       /** https://oicqjs.github.io/oicq/#events */
       event: 'message',
-      priority: 5000,
+      priority: '5000',
       rule: [
         {
           reg: '^[^#][sS]*',
@@ -24,8 +24,43 @@ export class bym extends plugin {
     })
   }
 
+  /**
+   * 计算模拟人类打字的延迟时间
+   * @param {string} text 要发送的文本
+   * @returns {number} 延迟时间(毫秒)
+   */
+  calculateTypingDelay(text) {
+    // 基本打字速度：假设平均每个字符200毫秒
+    const baseSpeed = 250; // 毫秒/字符
+    
+    // 获取字符数
+    const charCount = text.length;
+    
+    // 计算基础延迟时间（毫秒）
+    let delay = charCount * baseSpeed;
+    
+    // 设置最小延迟和最大延迟
+    const minDelay = 1000;
+    const maxDelay = 3000;
+    
+    // 确保延迟在合理范围内
+    delay = Math.max(minDelay, delay);
+    delay = Math.min(maxDelay, delay);
+    
+    // 添加随机波动(±15%)，让打字感觉更自然
+    const randomFactor = 0.85 + (Math.random() * 0.3); // 0.85-1.15之间的随机数
+    delay = Math.round(delay * randomFactor);
+    
+    return delay;
+  }
+
   /** 复读 */
   async bym (e) {
+
+    if (e.atme) {
+      return false
+    }
+
     if (!Config.enableBYM) {
       return false
     }
@@ -55,8 +90,10 @@ export class bym extends plugin {
     }
     if (prop < Config.bymRate) {
       logger.info('random chat hit')
-      // let chats = await getChatHistoryGroup(e, Config.groupContextLength)
-      let system = `你的名字是“${Config.assistantLabel}”，你在一个qq群里，群号是${group},当前和你说话的人群名片是${card}, qq号是${sender}, 请你结合用户的发言和聊天记录作出回应，要求表现得随性一点，最好参与讨论，混入其中。不要过分插科打诨，不知道说什么可以复读群友的话。要求你做搜索、发图、发视频和音乐等操作时要使用工具。不可以直接发[图片]这样蒙混过关。要求优先使用中文进行对话。如果此时不需要自己说话，可以只回复<EMPTY>` +
+      // 获取群聊上下文
+      let chats = await getChatHistoryGroup(e, Config.groupContextLength)
+      
+      let system = `你的名字是"${Config.assistantLabel}"，你在一个qq群里，群号是${group},当前和你说话的人群名片是${card}, qq号是${sender}, 请你结合用户的发言和聊天记录作出回应，要求表现得随性一点，最好参与讨论，混入其中。不要过分插科打诨，不知道说什么可以复读群友的话。要求你做搜索、发图、发视频和音乐等操作时要使用工具。不可以直接发[图片]这样蒙混过关。要求优先使用中文进行对话，不使用颜文字。如果此时不需要自己说话，可以只回复<EMPTY>` +
         candidate +
         `\n你的回复应该尽可能简练，像人类一样随意，不要附加任何奇怪的东西，如聊天记录的格式（比如${Config.assistantLabel}：），禁止重复聊天记录。`
 
@@ -77,13 +114,15 @@ export class bym extends plugin {
             msg && e.reply(msg)
           },
           // 强制打开上下文，不然伪人笨死了
-          enableGroupContext: true
+          enableGroupContext: true,
+          // 传递群聊上下文
+          groupContext: chats
         }
       })
-      // let rsp = await client.sendMessage(e.msg, opt)
+      
       let text = rsp.text
       let texts = customSplitRegex(text, /(?<!\?)[。？\n](?!\?)/, 3)
-      // let texts = text.split(/(?<!\?)[。？\n](?!\?)/, 3)
+      
       for (let t of texts) {
         if (!t) {
           continue
@@ -95,7 +134,15 @@ export class bym extends plugin {
         let finalMsg = await convertFaces(t, true, e)
         logger.info(JSON.stringify(finalMsg))
         finalMsg = finalMsg.map(filterResponseChunk).filter(i => !!i)
+        
         if (finalMsg && finalMsg.length > 0) {
+          // 先计算并等待模拟打字的延迟
+          const typingDelay = this.calculateTypingDelay(t);
+          logger.info(`模拟打字延迟：${typingDelay}ms，文本长度：${t.length}`);
+          
+          await new Promise(resolve => setTimeout(resolve, typingDelay));
+          
+          // 延迟后再发送消息
           if (Math.floor(Math.random() * 100) < 10) {
             await this.reply(finalMsg, true, {
               recallMsg: fuck ? 10 : 0
@@ -105,11 +152,6 @@ export class bym extends plugin {
               recallMsg: fuck ? 10 : 0
             })
           }
-          await new Promise((resolve, reject) => {
-            setTimeout(() => {
-              resolve()
-            }, Math.min(t.length * 200, 3000))
-          })
         }
       }
     }
