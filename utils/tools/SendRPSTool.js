@@ -1,4 +1,5 @@
 import { AbstractTool } from './AbstractTool.js'
+import { segment } from 'oicq'
 
 export class SendRPSTool extends AbstractTool {
   name = 'sendRPS'
