@@ -1115,26 +1115,20 @@ if (response.includes('⤶')) {
         }
       }
     } catch (err) {
-      logger.error(`ChatGPT回复出错: ${err.message}`)
-        await this.reply(`出现错误：${err.message}`, false, { recallMsg: e.isGroup ? 10 : 0 })
-      if (use === 'api3') {
-        // 异常了也要腾地方（todo 大概率后面的也会异常，要不要一口气全杀了）
-        await redis.lPop('CHATGPT:CHAT_QUEUE', 0)
-      }
-      if (err === 'Error: {"detail":"Conversation not found"}') {
-        await this.destroyConversations(err)
-        await this.reply('当前对话异常，已经清除，请重试', false, { recallMsg: e.isGroup ? 10 : 0 })
-      } else {
-        let errorMessage = err?.message || err?.data?.message || (typeof (err) === 'object' ? JSON.stringify(err) : err) || '未能确认错误类型！'
-        if (errorMessage.length < 200) {
-          await this.reply(`出现错误：${errorMessage}`, false, { recallMsg: e.isGroup ? 10 : 0 })
-        } else {
-          await this.renderImage(e, use, `出现异常,错误信息如下 \n \`\`\`${errorMessage}\`\`\``, prompt)
-        }
-      }
+    // 只保留错误日志记录和必要的清理逻辑，完全移除所有回复
+    logger.error(`ChatGPT回复出错: ${err.message}`)
+  
+    if (use === 'api3') {
+      // 异常时从队列移除
+      await redis.lPop('CHATGPT:CHAT_QUEUE', 0)
+    }
+  
+    if (err.message.includes('Conversation not found')) {
+      // 特殊错误只清理不提示
+      await this.destroyConversations(err)
     }
   }
-
+}
 // 修改后的后备方案方法
 async sendSplitMessage(text, isGroup) {
   // 使用正则表达式将文本分割成句子
