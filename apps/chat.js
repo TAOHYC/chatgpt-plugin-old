@@ -685,7 +685,7 @@ export class chatgpt extends plugin {
     // 检索是否有屏蔽词
     const promtBlockWord = Config.promptBlockWords.find(word => prompt.toLowerCase().includes(word.toLowerCase()))
     if (promtBlockWord) {
-      await this.reply('主人不让我回答你这种问题，真是抱歉了呢', false)
+      // await this.reply('主人不让我回答你这种问题，真是抱歉了呢', false)
       return false
     }
     let confirm = await redis.get('CHATGPT:CONFIRM')
@@ -989,7 +989,7 @@ if (response.includes('⤶')) {
       // 检索是否有屏蔽词
       const blockWord = Config.blockWords.find(word => response.toLowerCase().includes(word.toLowerCase()))
       if (blockWord) {
-        await this.reply('返回内容存在敏感词，我不想回答你', false)
+        // await this.reply('返回内容存在敏感词，我不想回答你', false)
         return false
       }
       // 处理中断的代码区域
