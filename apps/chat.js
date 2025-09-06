@@ -694,7 +694,7 @@ export class chatgpt extends plugin {
       await this.reply('我正在思考如何回复你，请稍等', false, { recallMsg: 8 })
     }
 
-    prompt = `请基于情感和语气对你最终的回复进行分段，并在每段后添加"⤶"(分段符号)以便我用正则匹配，每个段落需要简短自然，最多能分两个段落。\n\n${prompt}`
+    prompt = `\n\n${prompt}`
 
     const emotionFlag = await redis.get(`CHATGPT:WRONG_EMOTION:${e.sender.user_id}`)
     let userReplySetting = await getUserReplySetting(this.e)
