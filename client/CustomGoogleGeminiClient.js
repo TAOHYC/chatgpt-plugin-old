@@ -323,7 +323,24 @@ export class CustomGoogleGeminiClient extends GoogleGeminiClient {
               sender: this.e.sender.user_id,
               mode: 'gemini'
             })
-            functionResponse.response.content = await chosenTool.func(args, this.e)
+            
+            // 执行工具
+            let toolResult = await chosenTool.func(args, this.e)
+            
+            // ========================================
+            // 移除特殊符号 ⤶ 的处理逻辑
+            // ========================================
+            if (typeof toolResult === 'string' && toolResult.includes('⤶')) {
+              logger.info(`工具 ${funcName} 返回消息包含分段符号 ⤶，将其移除`)
+              // 直接移除所有 ⤶ 符号
+              toolResult = toolResult.replace(/⤶/g, '')
+              // 如果你想替换为换行符，可以使用下面这行代替：
+              // toolResult = toolResult.replace(/⤶/g, '\n')
+              logger.info(`移除分段符号后的结果: ${toolResult}`)
+            }
+            
+            functionResponse.response.content = toolResult
+            
             if (this.debug) {
               logger.info(JSON.stringify(functionResponse.response.content))
             }
