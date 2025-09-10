@@ -56,7 +56,6 @@ export class bym extends plugin {
 
   /** 复读 */
   async bym (e) {
-
     if (e.atme) {
       return false
     }
@@ -65,35 +64,39 @@ export class bym extends plugin {
       return false
     }
 
+    if (Config.assistantLabel && e.msg?.includes(Config.assistantLabel)) {
+      return await this.triggerReply(e, true)
+    }
+
     // 伪人禁用群
     if (Config.bymDisableGroup?.includes(e.group_id?.toString())) {
       return false
     }
 
+    // 普通概率触发逻辑
+    return await this.triggerReply(e, false)
+  }
+
+  /** 触发回复逻辑 */
+  async triggerReply(e, forceReply = false) {
     let sender = e.sender.user_id
     let card = e.sender.card || e.sender.nickname
     let group = e.group_id
-    let prop = Math.floor(Math.random() * 100)
-    if (Config.assistantLabel && e.msg?.includes(Config.assistantLabel)) {
-      prop = -1
-    }
-    // 去掉吧 频率有点逆天
-    // if (e.msg?.endsWith('？')) {
-    //   prop = prop / 10
-    // }
-
+    let prop = forceReply ? -1 : Math.floor(Math.random() * 100)
+    
     let fuck = false
     let candidate = Config.bymPreset
     if (Config.bymFuckList?.find(i => e.msg?.includes(i))) {
       fuck = true
       candidate = candidate + Config.bymFuckPrompt
     }
+    
     if (prop < Config.bymRate) {
-      logger.info('random chat hit')
+      logger.info(`随机聊天命中，触发方式: ${forceReply ? '强制触发' : '概率触发'}，概率值: ${prop}`)
       // 获取群聊上下文
       let chats = await getChatHistoryGroup(e, Config.groupContextLength)
       
-      let system = `你的名字是"${Config.assistantLabel}"，你在一个qq群里，群号是${group},当前和你说话的人群名片是${card}, qq号是${sender}, 请你结合用户的发言和聊天记录作出回应，要求表现得随性一点，最好参与讨论，混入其中。不要过分插科打诨，不知道说什么可以复读群友的话。要求你做搜索、发图、发视频和音乐等操作时要使用工具。禁止直接发“[图片]”这样的来蒙混过关。要求优先使用中文进行对话，不使用颜文字。禁止发送CQ码，禁止发送网址链接。如果此时不需要自己说话，可以只回复<EMPTY>` +
+      let system = `你的名字是"${Config.assistantLabel}"，你在一个qq群里，群号是${group},当前和你说话的人群名片是${card}, qq号是${sender}, 请你结合用户的发言和聊天记录作出回应，要求表现得随性一点，最好参与讨论，混入其中。不要过分插科打诨诨，不知道说什么可以复读群友的话。要求你做搜索、发图、发视频和音乐等操作时要使用工具。禁止直接发"[图片]"这样的来蒙混过关。要求优先使用中文进行对话，不使用颜文字。禁止发送CQ码，禁止发送网址链接。如果此时不需要自己说话，可以只回复<EMPTY>` +
         candidate +
         `\n你的回复应该尽可能简练，像人类一样随意，不要附加任何奇怪的东西，如聊天记录的格式（比如${Config.assistantLabel}：），禁止重复聊天记录。`
 
@@ -154,6 +157,7 @@ export class bym extends plugin {
           }
         }
       }
+      return true
     }
     return false
   }
